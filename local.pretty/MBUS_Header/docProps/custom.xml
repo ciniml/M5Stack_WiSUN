@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<Properties xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.spaceclaim.com/designDocument/customProperties">
+  <Properties>
+    <boolProperty name="@BomShowOnlyIncluded" id="20954803-7fa4-43d1-990a-f7a2068214f8">
+      <Value>true</Value>
+    </boolProperty>
+  </Properties>
+</Properties>

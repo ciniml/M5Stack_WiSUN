@@ -1,0 +1,10 @@
+*-cache.lib
+*.bak
+*.kicad_pcb-bak
+Gerber/ACCurrentSensor.zip
+_saved_*
+*.log
+*.pyc
+_autosave-*
+Gerber*/*.zip
+rescue-backup/

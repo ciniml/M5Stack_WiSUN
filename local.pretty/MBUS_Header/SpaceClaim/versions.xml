@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<VersionHistory xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Versions>
+    <guid>3ad61c4c-0436-40da-b3a5-cd1b86a08cbe</guid>
+    <guid>f9d0c369-baca-42aa-bfe2-f77bc6829aef</guid>
+    <guid>6a376aea-221a-47bd-9836-7ca903a3b978</guid>
+  </Versions>
+  <History>
+    <int>-1</int>
+    <int>0</int>
+    <int>1</int>
+  </History>
+  <HighestSavedFromMajorReleases>
+    <int>310</int>
+    <int>310</int>
+    <int>310</int>
+  </HighestSavedFromMajorReleases>
+</VersionHistory>

@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<xs:schema xmlns:tns="http://schemas.spaceclaim.com/package/2015" attributeFormDefault="unqualified" elementFormDefault="qualified" targetNamespace="http://schemas.spaceclaim.com/package/2015" xmlns:xs="http://www.w3.org/2001/XMLSchema" />
