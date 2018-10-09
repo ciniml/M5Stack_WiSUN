@@ -1,3 +1,8 @@
+"""
+Module to control Rohm BP35A1
+License: Boost Software License 1.0
+"""
+
 import logging
 import time
 import uasyncio as asyncio

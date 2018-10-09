@@ -1,3 +1,7 @@
+"""
+Main module for M5Stack-WiSUN Expansion board sample application.
+License: Boost Software License
+"""
 try:
     from mpy_builtins import machine, const
     from typing import Tuple, Callable, List, Dict, Optional, Union, Generator, Optional
