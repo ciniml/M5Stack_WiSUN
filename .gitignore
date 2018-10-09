@@ -8,3 +8,5 @@ _saved_*
 _autosave-*
 Gerber*/*.zip
 rescue-backup/
+.mypy_cache/
+python/appconfig.py
