@@ -28,36 +28,25 @@ class BP35A1(object):
     IOEXPANDER_OUTPUT_RESET  = 0x02
     IOEXPANDER_OUTPUT_RTS    = 0x04
 
-    def __init__(self, uart: machine.UART, i2c: machine.I2C, i2c_addr: int = 0x64) -> None:
+    def __init__(self, uart: machine.UART, wkup: machine.Pin, reset: machine.Pin) -> None:
+        "Construct BP35A1 instance"
         self.__l = logging.Logger('BP35A1')
-        self.__i2c = i2c
         self.__uart = uart
-        self.__i2c_addr = i2c_addr
-        self.__ioe_out = bytearray(b'\x00')
-        self.__sr = asyncio.StreamReader(self.__uart)
+        self.__wkup = wkup
+        self.__reset = reset
     
-    def __set_ioe_bit(self, bit:int, to_set:bool) -> None:
-        if to_set:
-            self.__ioe_out[0] = self.__ioe_out[0] | bit
-        else:
-            self.__ioe_out[0] = self.__ioe_out[0] & (~bit)
-        self.__update_ioe_output()
-
-    def __update_ioe_output(self) -> None:
-        self.__i2c.writeto_mem(self.__i2c_addr, BP35A1.IOEXPANDER_REG_OUTPUT, self.__ioe_out)
-
     def initialize(self) -> None:
         "Initialize I/O ports and peripherals to communicate with the module."
-        self.__l.debug('initialize')
-        self.__ioe_out[0] = BP35A1.IOEXPANDER_OUTPUT_WKUP | BP35A1.IOEXPANDER_OUTPUT_RTS  # Assert RESET
-        self.__update_ioe_output()
+        self.__wkup.value(True)
+        self.__reset.value(False) # Assert RESET
         self.__uart.init(baudrate=115200, timeout=5000)
         
     async def reset(self) -> bool:
         "Reset the module."
         
-        self.__set_ioe_bit(BP35A1.IOEXPANDER_OUTPUT_RESET, False)  # Assert RESET
-        self.__set_ioe_bit(BP35A1.IOEXPANDER_OUTPUT_RESET, True)  # Deassert RESET
+        self.__reset.value(False) # Assert RESET at least 1 [ms]
+        await asyncio.sleep_ms(1) # /
+        self.__reset.value(True)  # Deassert RESET
         await asyncio.sleep_ms(3000)    # We must wait 3000 milliseconds after RESET pin is deasserted. (HW spec p.14)
 
         responded = False

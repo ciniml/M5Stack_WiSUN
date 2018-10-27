@@ -82,11 +82,8 @@ def unique_id()->str:
 
 class Pin(object):
     IN = 0
-    OUT_PP = 1
+    OUT = 1
     OUT_OD = 2
-    AF_PP = 3
-    AF_OD = 4
-    ANALOG = 5
 
     PULL_NONE = 0
     PULL_UP = 1

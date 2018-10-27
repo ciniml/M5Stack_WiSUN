@@ -23,7 +23,7 @@ def reset():
     machine.reset()
 
 # Configure logger.
-#logging.basicConfig(logging.DEBUG)
+# logging.basicConfig(logging.DEBUG)
 log = logging.Logger('MAIN')
 
 # Start Wi-Fi
@@ -34,62 +34,15 @@ time.sleep(5)
 
 # Start FTP server to upload source codes.
 network.ftp.start(user='esp32', password='esp32')
-
-#
-i2c = machine.I2C(id=1, sda=21, scl=22, mode=machine.I2C.MASTER, speed=100000)
-
-log.info('Scanning I2C bus...')
-i2c_devices = i2c.scan() # type: List[int]
-
-log.info('Detected devices are: {0}'.format(str(i2c_devices)))
-
-# Load IO Expander binary 
-bl_addr = const(0x65)
-if bl_addr in i2c_devices:
-    log.info('The IO expander is in bootloader mode.')
-    # Bootloader exists on the bus.
-    # First, we have to check whether the target application is already loaded or not.
-    with open('/flash/ioexpander.bin', 'rb') as f:
-        page_size = const(128)
-        b = f.read()
-        progmem = i2c.readfrom_mem(bl_addr, 0x0000, len(b), adrlen=2)
-
-        # The contents in the program memory of IO expander differs from the target firmware.
-        if b != progmem:
-            log.info('The IO expander firmware must be downloaded.')
-            i2c.writeto_mem(bl_addr, 0x8003, b'\xac', adrlen=2)
-            l = len(b)
-            if (l & (page_size - 1)) != 0:
-                l = (l + page_size - 1) & ~(page_size - 1)
-                padding = l - len(b)
-                b += b'\x00'*padding
-            mv = memoryview(b)   
-            for base in range(0, l, page_size):
-                i2c.writeto_mem(bl_addr, base, mv[base:base+page_size], adrlen=2)
-                time.sleep_ms(100)
-
-    log.info('Boot the IO expander')
-    # Boot IO Expander
-    i2c.writeto_mem(bl_addr, 0x8001, b'\x01', adrlen=2)
-    time.sleep_ms(250)
-
-
 gc.collect()
 
-# Rescan I2C bus...
-bp35_addr = const(0x64)
-i2c_devices = i2c.scan()
-log.info('Detected devices are: {0}'.format(str(i2c_devices)))
-
-if bp35_addr not in i2c_devices:
-    log.error('IO expander device was not found.')
-    machine.deepsleep()
-
-time.sleep(1)
-bp35_uart = machine.UART(1, rx=5, tx=2, baudrate=115200, lineend='\r\n')
+# Initialize BP35A1 interfaces
+bp35_wkup  = machine.Pin(12, machine.Pin.OUT)
+bp35_reset = machine.Pin(13, machine.Pin.OUT)
+bp35_uart = machine.UART(1, rx=2, tx=5, baudrate=115200, lineend='\r\n')
 #bp35_uart = machine.UART(2, rx=13, tx=12, baudrate=115200, lineend='\r\n')
 
-bp35 = BP35A1(uart=bp35_uart, i2c=i2c, i2c_addr=0x64)
+bp35 = BP35A1(uart=bp35_uart, wkup=bp35_wkup, reset=bp35_reset)
 
 bp35_state = ''
 
@@ -207,10 +160,10 @@ async def main_task():
             await asyncio.sleep(1)
             continue
         
-        if not await bp35.set_password(appconfig.password, timeout=5000):
+        if not await bp35.set_password(appconfig.route_b_password, timeout=5000):
             log.error('Failed to set password.')
             continue
-        if not await bp35.set_route_b_id(appconfig.id, timeout=5000):
+        if not await bp35.set_route_b_id(appconfig.route_b_id, timeout=5000):
             log.error('Failed to set route-b ID.')
             continue
 
