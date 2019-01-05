@@ -11,6 +11,7 @@ except:
     import network
     import time
     from machine import reset
+    import curl
 
 import gc
 import logging
@@ -23,18 +24,8 @@ def reset():
     machine.reset()
 
 # Configure logger.
-# logging.basicConfig(logging.DEBUG)
+logging.basicConfig(logging.DEBUG)
 log = logging.Logger('MAIN')
-
-# Start Wi-Fi
-w = network.WLAN()
-w.active(True)
-w.connect(appconfig.wifi_ssid, appconfig.wifi_password)
-time.sleep(5)
-
-# Start FTP server to upload source codes.
-network.ftp.start(user='esp32', password='esp32')
-gc.collect()
 
 # Initialize BP35A1 interfaces
 bp35_wkup  = machine.Pin(12, machine.Pin.OUT)
@@ -109,7 +100,11 @@ class EchonetLiteFrame(object):
         opc = self.opc()
         offset = 12
         for i in range(opc):
+            if offset + 1 >= len(self._m):
+                break
             pdc = self._m[offset + 1]
+            if offset + 2 + pdc >= len(self._m):
+                break
             yield self._m[offset:offset + 2 + pdc]
             offset += 2 + pdc
     
@@ -212,6 +207,8 @@ async def main_task():
         gc.collect()
         bp35_state = 'Connected'
         response_buffer = bytearray(3072)
+
+        harvest_endpoint = 'https://api.soracom.io/v1/devices/{0}/publish?device_secret={1}'.format(appconfig.inventory_id, appconfig.inventory_password)
         while True:
             if await bp35.send_to(True, ll_address, 0xe1a, getPropertyFrame.bytes(), timeout=10000):
                 response = await bp35.receive(response_buffer, timeout=10000)
@@ -233,7 +230,13 @@ async def main_task():
                                     log.info('Current R={0},T={1}[dA]'.format(current_r, current_t))
                                     last_instant_current = (current_r, current_t)
                             
-                            await asyncio.sleep(10)     
+                            if last_instant_power is not None:
+                                harvest_data = "&power={0}".format(last_instant_power)
+                                res = curl.get(harvest_endpoint + harvest_data)
+                                if res[0] != 0:
+                                    log.error('Failed to post data')
+                                    log.error(res[1])
+                            await asyncio.sleep(10)
 
 
     
@@ -251,6 +254,7 @@ async def display_task():
             lcd.text(0, 20, 'Power: {0}'.format(last_instant_power))
         if last_instant_current is not None:
             lcd.text(0, 40, 'Current R, T: {0}, {1}'.format(last_instant_current[0]//10, last_instant_current[1]//10))
+        gc.collect()
         await asyncio.sleep_ms(100)
 
 loop = asyncio.get_event_loop()
