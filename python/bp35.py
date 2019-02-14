@@ -22,42 +22,32 @@ class BP35A1(object):
     "Controls Rohm BP35A1 Wi-SUN ECHONET module"
     CR = const(0x0d)
     LF = const(0x0a)
+    SPC = const(0x20)
 
     IOEXPANDER_REG_OUTPUT = 0x02
     IOEXPANDER_OUTPUT_WKUP   = 0x01
     IOEXPANDER_OUTPUT_RESET  = 0x02
     IOEXPANDER_OUTPUT_RTS    = 0x04
 
-    def __init__(self, uart: machine.UART, i2c: machine.I2C, i2c_addr: int = 0x64) -> None:
+    def __init__(self, uart: machine.UART, wkup: machine.Pin, reset: machine.Pin) -> None:
+        "Construct BP35A1 instance"
         self.__l = logging.Logger('BP35A1')
-        self.__i2c = i2c
         self.__uart = uart
-        self.__i2c_addr = i2c_addr
-        self.__ioe_out = bytearray(b'\x00')
-        self.__sr = asyncio.StreamReader(self.__uart)
+        self.__wkup = wkup
+        self.__reset = reset
     
-    def __set_ioe_bit(self, bit:int, to_set:bool) -> None:
-        if to_set:
-            self.__ioe_out[0] = self.__ioe_out[0] | bit
-        else:
-            self.__ioe_out[0] = self.__ioe_out[0] & (~bit)
-        self.__update_ioe_output()
-
-    def __update_ioe_output(self) -> None:
-        self.__i2c.writeto_mem(self.__i2c_addr, BP35A1.IOEXPANDER_REG_OUTPUT, self.__ioe_out)
-
     def initialize(self) -> None:
         "Initialize I/O ports and peripherals to communicate with the module."
-        self.__l.debug('initialize')
-        self.__ioe_out[0] = BP35A1.IOEXPANDER_OUTPUT_WKUP | BP35A1.IOEXPANDER_OUTPUT_RTS  # Assert RESET
-        self.__update_ioe_output()
+        self.__wkup.value(True)
+        self.__reset.value(False) # Assert RESET
         self.__uart.init(baudrate=115200, timeout=5000)
         
     async def reset(self) -> bool:
         "Reset the module."
         
-        self.__set_ioe_bit(BP35A1.IOEXPANDER_OUTPUT_RESET, False)  # Assert RESET
-        self.__set_ioe_bit(BP35A1.IOEXPANDER_OUTPUT_RESET, True)  # Deassert RESET
+        self.__reset.value(False) # Assert RESET at least 1 [ms]
+        await asyncio.sleep_ms(1) # /
+        self.__reset.value(True)  # Deassert RESET
         await asyncio.sleep_ms(3000)    # We must wait 3000 milliseconds after RESET pin is deasserted. (HW spec p.14)
 
         responded = False
@@ -188,32 +178,58 @@ class BP35A1(object):
         self.write(data)
         return await self.wait_response(b'OK', timeout=timeout) is not None
 
-    async def receive(self, buffer:bytearray, timeout:Optional[int] = None) -> Optional[memoryview]:
+    async def read_response_block(self, buffer:bytearray, offset:int=0, timeout:Optional[int] = None) -> Optional[int]:
+        buffer_length = len(buffer)
+        response_length = 0
+        start_time_ms = time.ticks_ms()
         while True:
-            response = await self.wait_response_into(b'ERXUDP ', buffer, timeout=timeout)
+            c = self.__readchar()
+            if c < 0:
+                if timeout is not None and (time.ticks_ms()-start_time_ms) >= timeout:
+                    return None
+                try:
+                    await asyncio.sleep_ms(1)
+                except asyncio.CancelledError:
+                    return None
+                continue
+            # self.__l.debug('%c', c)
+            if c == BP35A1.CR or c == BP35A1.LF:
+                pass
+            elif c == BP35A1.SPC:
+                return response_length
+            else:
+                buffer[offset+response_length] = c
+                response_length += 1
+                if offset+response_length == buffer_length:
+                    return response_length
+            
+    
+    async def receive(self, buffer:bytearray, timeout:Optional[int] = None) -> Optional[memoryview]:
+        head = b'ERXUDP'
+        head_len = len(head)
+        mv = memoryview(buffer)
+        start_time_ms = time.ticks_ms()
+        while timeout is None or time.ticks_ms() - start_time_ms < timeout:
+            response = await self.read_response_block(mv, timeout=timeout)
+            if response is None or response != head_len or mv[:head_len] != head:
+                pass
+            else:
+                # self.__l.debug('response:{0}'.format(bytes(mv[:response])))
+                break
+        block_count = 1
+        while True:
+            response = await self.read_response_block(mv, timeout=timeout)
             if response is None:
                 return None
-            
-            blocks = [] # type: List[memoryview]
-            start = 0
-            index = 0
-            while True:
-                if index >= len(response):
-                    break
-                if response[index] == 0x20: # space
-                    blocks.append(memoryview(response[start:index]))
-                    start = index + 1
-                    if len(blocks) == 8:
-                        break
-                index += 1
-            self.__l.debug('blocks: {0}'.format(blocks))
-            if len(blocks) < 8:
-                return None
-            data_len = int(str(bytes(blocks[7]), 'utf-8'), 16)
-            self.__l.debug(bytes(response))
-            self.__l.debug('ERXUDP DATALEN={0}'.format(data_len))
-            data = response[start:]
-            return data
+            self.__l.debug('response block{0}:{1}'.format(block_count, bytes(mv[:response])))
+            block_count += 1
+            if block_count == 8:
+                data_len = int(str(mv[:response], 'utf-8'), 16)
+                break
+
+        self.__l.debug('ERXUDP DATALEN={0}'.format(data_len))
+        bytes_read = self.__uart.readinto(mv[:data_len])
+        return mv[:bytes_read+1]
 
 
     def write(self, s:bytes) -> None:
