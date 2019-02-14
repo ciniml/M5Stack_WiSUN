@@ -22,6 +22,7 @@ class BP35A1(object):
     "Controls Rohm BP35A1 Wi-SUN ECHONET module"
     CR = const(0x0d)
     LF = const(0x0a)
+    SPC = const(0x20)
 
     IOEXPANDER_REG_OUTPUT = 0x02
     IOEXPANDER_OUTPUT_WKUP   = 0x01
@@ -177,32 +178,58 @@ class BP35A1(object):
         self.write(data)
         return await self.wait_response(b'OK', timeout=timeout) is not None
 
-    async def receive(self, buffer:bytearray, timeout:Optional[int] = None) -> Optional[memoryview]:
+    async def read_response_block(self, buffer:bytearray, offset:int=0, timeout:Optional[int] = None) -> Optional[int]:
+        buffer_length = len(buffer)
+        response_length = 0
+        start_time_ms = time.ticks_ms()
         while True:
-            response = await self.wait_response_into(b'ERXUDP ', buffer, timeout=timeout)
+            c = self.__readchar()
+            if c < 0:
+                if timeout is not None and (time.ticks_ms()-start_time_ms) >= timeout:
+                    return None
+                try:
+                    await asyncio.sleep_ms(1)
+                except asyncio.CancelledError:
+                    return None
+                continue
+            # self.__l.debug('%c', c)
+            if c == BP35A1.CR or c == BP35A1.LF:
+                pass
+            elif c == BP35A1.SPC:
+                return response_length
+            else:
+                buffer[offset+response_length] = c
+                response_length += 1
+                if offset+response_length == buffer_length:
+                    return response_length
+            
+    
+    async def receive(self, buffer:bytearray, timeout:Optional[int] = None) -> Optional[memoryview]:
+        head = b'ERXUDP'
+        head_len = len(head)
+        mv = memoryview(buffer)
+        start_time_ms = time.ticks_ms()
+        while timeout is None or time.ticks_ms() - start_time_ms < timeout:
+            response = await self.read_response_block(mv, timeout=timeout)
+            if response is None or response != head_len or mv[:head_len] != head:
+                pass
+            else:
+                # self.__l.debug('response:{0}'.format(bytes(mv[:response])))
+                break
+        block_count = 1
+        while True:
+            response = await self.read_response_block(mv, timeout=timeout)
             if response is None:
                 return None
-            
-            blocks = [] # type: List[memoryview]
-            start = 0
-            index = 0
-            while True:
-                if index >= len(response):
-                    break
-                if response[index] == 0x20: # space
-                    blocks.append(memoryview(response[start:index]))
-                    start = index + 1
-                    if len(blocks) == 8:
-                        break
-                index += 1
-            self.__l.debug('blocks: {0}'.format(blocks))
-            if len(blocks) < 8:
-                return None
-            data_len = int(str(bytes(blocks[7]), 'utf-8'), 16)
-            self.__l.debug(bytes(response))
-            self.__l.debug('ERXUDP DATALEN={0}'.format(data_len))
-            data = response[start:]
-            return data
+            self.__l.debug('response block{0}:{1}'.format(block_count, bytes(mv[:response])))
+            block_count += 1
+            if block_count == 8:
+                data_len = int(str(mv[:response], 'utf-8'), 16)
+                break
+
+        self.__l.debug('ERXUDP DATALEN={0}'.format(data_len))
+        bytes_read = self.__uart.readinto(mv[:data_len])
+        return mv[:bytes_read+1]
 
 
     def write(self, s:bytes) -> None:

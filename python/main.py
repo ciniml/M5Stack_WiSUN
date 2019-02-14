@@ -19,6 +19,7 @@ import uasyncio as asyncio
 from bp35 import BP35A1
 import struct
 import appconfig
+from ioexpander import IOExpander
 
 def reset(): 
     machine.reset()
@@ -27,11 +28,18 @@ def reset():
 logging.basicConfig(logging.DEBUG)
 log = logging.Logger('MAIN')
 
+# Configure IOExpander
+i2c_scl = machine.Pin(22)
+i2c_sda = machine.Pin(21)
+i2c = machine.I2C(scl=i2c_scl, sda=i2c_sda)
+ioe = IOExpander(i2c=i2c, address=24, output=0x03, inversion=0x00, direction=0xfc)
+
 # Initialize BP35A1 interfaces
-bp35_wkup  = machine.Pin(12, machine.Pin.OUT)
-bp35_reset = machine.Pin(13, machine.Pin.OUT)
+#bp35_wkup  = machine.Pin(12, machine.Pin.OUT)
+#bp35_reset = machine.Pin(13, machine.Pin.OUT)
+bp35_wkup = ioe.pin(0)
+bp35_reset = ioe.pin(1)
 bp35_uart = machine.UART(1, rx=2, tx=5, baudrate=115200, lineend='\r\n')
-#bp35_uart = machine.UART(2, rx=13, tx=12, baudrate=115200, lineend='\r\n')
 
 bp35 = BP35A1(uart=bp35_uart, wkup=bp35_wkup, reset=bp35_reset)
 
@@ -125,8 +133,14 @@ class EchonetLiteFrame(object):
         return self._next_offset
     
     def bytes(self)->memoryview:
-        return self._m[:self._next_offset]
-            
+        return self._m[:self._next_offset+1]
+
+PROPERTY_COEFFICIENT      = const(0xd3) # 係数
+PROPERTY_CUMULATIVE_VALUE = const(0xe0) # 積算電力量計測値
+PROPERTY_CUMULATIVE_UNIT  = const(0xe1) # 積算電力量単位
+PROPERTY_INSTANT_POWER    = const(0xe7) # 瞬時電力計測値
+PROPERTY_INSTANT_CURRENT  = const(0xe8) # 瞬時電流計測値
+
 # Construct ECHONETlite request frame
 getPropertyFrame = EchonetLiteFrame(bytearray(64))
 getPropertyFrame.init()
@@ -134,18 +148,19 @@ getPropertyFrame.tid(0x0000)            # TID = 0x0000
 getPropertyFrame.seoj(b'\x05\xff\x01')  # SEOJ 送信元EOJ クラスグループ=管理・操作関連機器, クラス=コントローラ
 getPropertyFrame.deoj(b'\x02\x88\x01')  # DEOJ 送信先EOJ クラスグループ=住宅・設備関連機器, クラス=低圧スマート電力量メータ
 getPropertyFrame.esv(EchonetLiteFrame.ESV_GET)  # プロパティ読み出し要求
-getPropertyFrame.add_property(0xd3, None)   # 係数
-getPropertyFrame.add_property(0xe0, None)   # 積算電力量計測値
-getPropertyFrame.add_property(0xe1, None)   # 積算電力量単位
-getPropertyFrame.add_property(0xe7, None)   # 瞬時電力計測値
-getPropertyFrame.add_property(0xe8, None)   # 瞬時電流計測値
+getPropertyFrame.add_property(PROPERTY_COEFFICIENT     , None)   
+getPropertyFrame.add_property(PROPERTY_CUMULATIVE_VALUE, None)   
+getPropertyFrame.add_property(PROPERTY_CUMULATIVE_UNIT , None)   
+getPropertyFrame.add_property(PROPERTY_INSTANT_POWER   , None)   
+getPropertyFrame.add_property(PROPERTY_INSTANT_CURRENT , None)   
 
 last_instant_power = None
 last_instant_current = None
-
+last_cumulative_power = None
 async def main_task():
     global bp35_state
-    global last_instant_power,last_instant_current
+    global last_instant_power,last_instant_current,last_cumulative_power
+    
     while True:
         bp35_state = 'Initializing'
         gc.collect()
@@ -206,54 +221,116 @@ async def main_task():
         
         gc.collect()
         bp35_state = 'Connected'
-        response_buffer = bytearray(3072)
-
+        response_buffer = bytearray(1024)
+        prev_last_instant_power = 0.0
+        no_post_count = 0
+        no_response_count = 0
+        no_response_reset_count = 0
         harvest_endpoint = 'https://api.soracom.io/v1/devices/{0}/publish?device_secret={1}'.format(appconfig.inventory_id, appconfig.inventory_password)
         while True:
             if await bp35.send_to(True, ll_address, 0xe1a, getPropertyFrame.bytes(), timeout=10000):
                 response = await bp35.receive(response_buffer, timeout=10000)
-                if response is not None:
+                if response is None:
+                    no_response_count += 1
+                    if no_response_count >= 6: # 6回連続でレスポンスが無かったらリセットする。
+                        log.info("No response. Perform reset.")
+                        no_response_reset_count += 1
+                        break
+                else:
+                    no_response_count = 0
                     frame = EchonetLiteFrame(response)
                     if frame.is_valid():
                         seoj = frame.seoj()
                         esv  = frame.esv()
                         
+                        coefficient = 1
+                        cumulative_unit = 1.0
+                        cumulative_value = None
+
                         log.debug("seoj={0}, esv={1}".format(seoj, esv))
                         if seoj == b'\x02\x88\x01' and esv == EchonetLiteFrame.ESV_GET_RES: # レスポンスはプロパティ読み取り要求の応答?
                             for mv in frame.target_properies():
-                                if mv[0] == 0xe7 and mv[1] == 4 and len(mv) == 6:   # 瞬時電力量
+                                if mv[0] == PROPERTY_INSTANT_POWER and mv[1] == 4 and len(mv) == 6:   # 瞬時電力量
                                     power = struct.unpack('>i', mv[2:])[0]
                                     log.info('Power={0}[W]'.format(power))
                                     last_instant_power = power
-                                elif mv[0] == 0xe8 and mv[1] == 4 and len(mv) == 6:   # 瞬時電流
+                                elif mv[0] == PROPERTY_INSTANT_CURRENT and mv[1] == 4 and len(mv) == 6:   # 瞬時電流
                                     current_r, current_t = struct.unpack('>hh', mv[2:])
                                     log.info('Current R={0},T={1}[dA]'.format(current_r, current_t))
                                     last_instant_current = (current_r, current_t)
+                                elif mv[0] == PROPERTY_COEFFICIENT and mv[1] == 4 and len(mv) == 6: # 係数
+                                    coefficient = struct.unpack('>I', mv[2:])[0]
+                                    log.debug('Coefficient={0}'.format(coefficient))
+                                elif mv[0] == PROPERTY_CUMULATIVE_UNIT and mv[1] == 1 and len(mv) == 3: # 単位
+                                    unit = mv[2]
+                                    if unit == 0x00:
+                                        cumulative_unit = 1.0e0
+                                    elif unit == 0x01:
+                                        cumulative_unit = 1.0e-1
+                                    elif unit == 0x02:
+                                        cumulative_unit = 1.0e-2
+                                    elif unit == 0x03:
+                                        cumulative_unit = 1.0e-3
+                                    elif unit == 0x04:
+                                        cumulative_unit = 1.0e-4
+                                    elif unit == 0x0a:
+                                        cumulative_unit = 1.0e+1
+                                    elif unit == 0x0b:
+                                        cumulative_unit = 1.0e+2
+                                    elif unit == 0x0c:
+                                        cumulative_unit = 1.0e+3
+                                    elif unit == 0x0d:
+                                        cumulative_unit = 1.0e+4
+                                    log.debug('CumulativeUnit={0}'.format(cumulative_unit))
+                                elif mv[0] == PROPERTY_CUMULATIVE_VALUE and mv[1] == 4 and len(mv) == 6: # 積算電力量
+                                    cumulative_value = struct.unpack('>I', mv[2:])[0]
+                                    log.debug('CumulativeValue={0}'.format(cumulative_value))
+                            
+                            if cumulative_value is not None:
+                                last_cumulative_power = cumulative_value*cumulative_unit*coefficient
+                                log.info('Cumulative Power={0}[kWh]'.format(last_cumulative_power))
                             
                             if last_instant_power is not None:
-                                harvest_data = "&power={0}".format(last_instant_power)
-                                res = curl.get(harvest_endpoint + harvest_data)
-                                if res[0] != 0:
-                                    log.error('Failed to post data')
-                                    log.error(res[1])
+                                prev_last_instant_power = 1 if prev_last_instant_power < 1 else prev_last_instant_power
+                                diff_percent = abs(last_instant_power - prev_last_instant_power) / prev_last_instant_power
+                                if diff_percent < 0.1:
+                                    no_post_count += 1
+                                
+                                if diff_percent >= 0.1 or no_post_count >= 30:
+                                    prev_last_instant_power = last_instant_power
+                                    log.info("POST: instant={0},cumulative={1},diff={2},no_post={3}".format(last_instant_power, last_cumulative_power, diff_percent, no_post_count))
+                                    harvest_data = "&power={0}&cumul={1}&reset={2}".format(last_instant_power, last_cumulative_power, no_response_reset_count)
+                                    res = curl.get(harvest_endpoint + harvest_data)
+                                    if res[0] != 0:
+                                        log.error('Failed to post data')
+                                        log.error(res[1])
+                                    no_post_count = 0
+                            
                             await asyncio.sleep(10)
-
-
-    
 
 # asyncio.set_debug(True)
 # asyncio.core.set_debug(True)
 
 lcd.clear()
 async def display_task():
+    lcd.font(lcd.FONT_DejaVu24)
+    font_size = lcd.fontSize()
     while True:
-        lcd.font(lcd.FONT_DejaVu24)
-        lcd.rect(0, 0, 320, 60, 0, 0)
-        lcd.text(0, 0, 'BP35A1: ' + bp35_state)
+        lcd.rect(0, font_size[1]*0, 320, font_size[1], 0, 0)
+        lcd.text(0, font_size[1]*0, 'SmartMeter: ' + bp35_state)
+        
+        lcd.rect(0, font_size[1]*1, 320, font_size[1], 0, 0)
         if last_instant_power is not None:
-            lcd.text(0, 20, 'Power: {0}'.format(last_instant_power))
+            lcd.text(0, font_size[1]*1, 'Power: {0}[W]'.format(last_instant_power))
+        
+        lcd.rect(0, font_size[1]*2, 320, font_size[1], 0, 0)
+        if last_cumulative_power is not None:
+            lcd.text(0, font_size[1]*2, 'Cumul: {0}[kWh]'.format(last_cumulative_power))
+        
+        lcd.rect(0, font_size[1]*3, 320, font_size[1], 0, 0)
         if last_instant_current is not None:
-            lcd.text(0, 40, 'Current R, T: {0}, {1}'.format(last_instant_current[0]//10, last_instant_current[1]//10))
+            lcd.text(0, font_size[1]*3, 'Current: R={0},T={1}[A]'.format(last_instant_current[0]/10,last_instant_current[1]/10))
+        
         gc.collect()
         await asyncio.sleep_ms(100)
 
