@@ -4,6 +4,8 @@
 
 M5StackにロームのWi-SUNモジュール BP35A1 をつなぐための拡張モジュールの設計データ
 
+<img alt="動作画面" width="640px" src="doc/figure/screenshot.jpg"/>
+
 ## ファームウェア
 
 * ビルド済みのカスタムMicroPythonバイナリと、pythonディレクトリに入っているスクリプトを含むSPIFFSイメージを書き込むように設定したM5BurnerをOneDriveに置いてあるので適当に使ってください。
