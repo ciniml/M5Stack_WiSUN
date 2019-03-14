@@ -11,7 +11,7 @@ except:
     import network
     import time
     from machine import reset
-    import curl
+    from urequests import request, Response
 
 import gc
 import logging
@@ -27,6 +27,10 @@ def reset():
 # Configure logger.
 logging.basicConfig(logging.DEBUG)
 log = logging.Logger('MAIN')
+
+# Synchronize time
+rtc = machine.RTC()
+rtc.ntp_sync(server='ntp.jst.mfeed.ad.jp',tz='JST')
 
 # Configure IOExpander
 i2c_scl = machine.Pin(22)
@@ -153,6 +157,16 @@ getPropertyFrame.add_property(PROPERTY_CUMULATIVE_VALUE, None)
 getPropertyFrame.add_property(PROPERTY_CUMULATIVE_UNIT , None)   
 getPropertyFrame.add_property(PROPERTY_INSTANT_POWER   , None)   
 getPropertyFrame.add_property(PROPERTY_INSTANT_CURRENT , None)   
+
+
+def post_json(endpoint:str, json:str) -> bool:
+    try:
+        r = request('POST', endpoint, data=json, headers={'Content-Type':'application/json'}) # type:Response
+        r.close()
+        return 200 <= r.status_code and r.status_code < 300
+    except:
+        log.error('Failed to post data to PowerBI')
+        return False
 
 last_instant_power = None
 last_instant_current = None
@@ -298,12 +312,12 @@ async def main_task():
                                 
                                 if diff_percent >= 0.1 or no_post_count >= 30:
                                     prev_last_instant_power = last_instant_power
+                                    timestamp = time.strftime('%Y-%m-%dT%H:%M:%S.000Z')
                                     log.info("POST: instant={0},cumulative={1},diff={2},no_post={3}".format(last_instant_power, last_cumulative_power, diff_percent, no_post_count))
-                                    harvest_data = "&power={0}&cumul={1}&reset={2}".format(last_instant_power, last_cumulative_power, no_response_reset_count)
-                                    res = curl.get(harvest_endpoint + harvest_data)
-                                    if res[0] != 0:
-                                        log.error('Failed to post data')
-                                        log.error(res[1])
+                                    json = '{{"power":{0},"cumul":{1},"reset":{2},"timestamp":"{3}"}}'.format(last_instant_power, last_cumulative_power, no_response_reset_count, timestamp)
+                                    log.debug(json)
+                                    post_json(appconfig.powerbi_url, '[' + json + ']')
+                                    post_json(harvest_endpoint, json)
                                     no_post_count = 0
                             
                             await asyncio.sleep(10)
@@ -313,23 +327,44 @@ async def main_task():
 
 lcd.clear()
 async def display_task():
-    lcd.font(lcd.FONT_DejaVu24)
-    font_size = lcd.fontSize()
     while True:
-        lcd.rect(0, font_size[1]*0, 320, font_size[1], 0, 0)
-        lcd.text(0, font_size[1]*0, 'SmartMeter: ' + bp35_state)
+        lcd.font(lcd.FONT_DejaVu24)
+        fw, fh = lcd.fontSize()
+
+        lcd.setTextColor(color=lcd.BLACK, bcolor=lcd.WHITE)
+        lcd.text(0, 0, 'SmartMeter: ' + bp35_state + '\r')
+        lcd.rect(0, fh, 320, 2, 0, 0)
         
-        lcd.rect(0, font_size[1]*1, 320, font_size[1], 0, 0)
+        lcd.setTextColor(color=lcd.WHITE, bcolor=lcd.BLACK)
+        lcd.text(319-fw*1, 90, 'W')
+        lcd.text(319-fw*3, 150, 'kWh')
+
+        lcd.font(lcd.FONT_7seg, transparent=False, dist=25, width=5, outline=False)
+        sfw, sfh = lcd.fontSize()
+
         if last_instant_power is not None:
-            lcd.text(0, font_size[1]*1, 'Power: {0}[W]'.format(last_instant_power))
+            if last_instant_power >= 1500:
+                lcd.setTextColor(color=lcd.RED)
+            else:
+                lcd.setTextColor(color=lcd.WHITE)
+            lcd.text(40, fh+4, '{0:04d}'.format(last_instant_power))
+        else:
+            lcd.setTextColor(color=lcd.WHITE)
+            lcd.text(40, fh+4, '----')
         
-        lcd.rect(0, font_size[1]*2, 320, font_size[1], 0, 0)
+        lcd.setTextColor(color=lcd.WHITE)
+        lcd.rect(0, fh+sfh+4, 320, 2, 0xffffff, 0xffffff)
+        lcd.font(lcd.FONT_7seg, transparent=False, dist=15, width=3, outline=False)
+        
         if last_cumulative_power is not None:
-            lcd.text(0, font_size[1]*2, 'Cumul: {0}[kWh]'.format(last_cumulative_power))
-        
-        lcd.rect(0, font_size[1]*3, 320, font_size[1], 0, 0)
-        if last_instant_current is not None:
-            lcd.text(0, font_size[1]*3, 'Current: R={0},T={1}[A]'.format(last_instant_current[0]/10,last_instant_current[1]/10))
+            lcd.text(40, fh+sfh+10, '{0:06.1f}'.format(last_cumulative_power))
+        else:
+            lcd.text(40, fh+sfh+10, '------')
+
+        lcd.rect(0, 180, 320, 2, 0xffffff, 0xffffff)
+
+        # if last_instant_current is not None:
+        #     lcd.text(0, font_size[1]*3, 'Current: R={0},T={1}[A]'.format(last_instant_current[0]/10,last_instant_current[1]/10))
         
         gc.collect()
         await asyncio.sleep_ms(100)
