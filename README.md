@@ -6,6 +6,8 @@ M5StackにロームのWi-SUNモジュール BP35A1 をつなぐための拡張�
 
 <img alt="動作画面" width="640px" src="doc/figure/screenshot.jpg"/>
 
+<iframe width="560" height="315" src="https://www.youtube.com/embed/MU2Bb5bknPw" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
 ## ファームウェア
 
 * ビルド済みのカスタムMicroPythonバイナリと、pythonディレクトリに入っているスクリプトを含むSPIFFSイメージを書き込むように設定したM5BurnerをOneDriveに置いてあるので適当に使ってください。
