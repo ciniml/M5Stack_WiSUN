@@ -12,6 +12,7 @@ except:
     import time
     from machine import reset
     from urequests import request, Response
+    import _thread
 
 import gc
 import logging
@@ -368,6 +369,21 @@ async def display_task():
         
         gc.collect()
         await asyncio.sleep_ms(100)
+
+
+
+log.info(gc.mem_alloc())
+gc.collect()
+log.info(gc.mem_alloc())
+
+def main_task_runner():
+    while True:
+        pass
+    #loop = asyncio.EventLoop()
+    #loop.create_task(main_task())
+    #loop.run_forever()
+
+#tid = _thread.start_new_thread('hoge', main_task_runner, ())
 
 loop = asyncio.get_event_loop()
 loop.create_task(display_task())
